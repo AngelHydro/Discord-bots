@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discord Viewer</title>
+<style>
+  :root { --bg:#313338; --side:#2b2d31; --text:#dbdee1; --muted:#949ba4; --hover:#2e3035; --accent:#5865f2; }
+  * { box-sizing:border-box; }
+  body { margin:0; display:flex; height:100vh; background:var(--bg); color:var(--text); font:15px/1.4 system-ui,sans-serif; }
+  nav { width:260px; background:var(--side); overflow-y:auto; padding:8px; flex-shrink:0; }
+  nav button { display:block; width:100%; text-align:left; background:none; border:0; color:var(--muted); padding:6px 8px; border-radius:4px; cursor:pointer; font:inherit; }
+  nav button:hover, nav button.on { background:var(--hover); color:var(--text); }
+  main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  header { padding:12px 16px; border-bottom:1px solid #1f2023; font-weight:600; }
+  #log { flex:1; overflow-y:auto; padding:16px; }
+  #more { margin:0 auto 12px; display:block; background:var(--accent); color:#fff; border:0; padding:6px 12px; border-radius:4px; cursor:pointer; }
+  .msg { display:flex; gap:12px; padding:4px 0; }
+  .msg img.av { width:40px; height:40px; border-radius:50%; flex-shrink:0; }
+  .who { font-weight:600; } .who small { color:var(--muted); font-weight:400; margin-left:6px; }
+  .txt { white-space:pre-wrap; word-wrap:break-word; }
+  .txt img { max-width:100%; max-height:240px; display:block; margin-top:4px; border-radius:4px; }
+  @media (max-width:640px) { body { flex-direction:column; } nav { width:100%; max-height:30vh; } }
+</style>
+</head>
+<body>
+<nav id="channels"></nav>
+<main>
+  <header id="title">Choisis un salon</header>
+  <div id="log"></div>
+</main>
+<script>
+let current = null, oldest = null;
+const log = document.getElementById('log');
+
+function render(m) {
+  const row = document.createElement('div'); row.className = 'msg';
+  const av = document.createElement('img'); av.className = 'av'; av.src = m.avatar; av.alt = '';
+  const body = document.createElement('div');
+  const who = document.createElement('div'); who.className = 'who';
+  who.textContent = m.author + (m.bot ? ' [BOT]' : '');
+  const t = document.createElement('small'); t.textContent = new Date(m.time).toLocaleString('fr-FR');
+  who.append(t);
+  const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = m.content; // textContent = pas d'injection HTML
+  for (const url of m.attachments) {
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    if (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(url)) { const i = document.createElement('img'); i.src = url; a.append(i); }
+    else a.textContent = url.split('/').pop().split('?')[0];
+    txt.append(a);
+  }
+  body.append(who, txt); row.append(av, body);
+  return row;
+}
+
+async function load(id, name) {
+  current = id; oldest = null; log.innerHTML = '';
+  document.getElementById('title').textContent = name;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.id === id));
+  await older();
+  log.scrollTop = log.scrollHeight;
+}
+
+async function older() {
+  const id = current;
+  const msgs = await (await fetch(`/api/channels/${id}/messages` + (oldest ? `?before=${oldest}` : ''))).json();
+  if (id !== current) return;
+  document.getElementById('more')?.remove();
+  const h = log.scrollHeight;
+  log.prepend(...msgs.map(render));
+  if (msgs.length) {
+    oldest = msgs[0].id;
+    const b = document.createElement('button'); b.id = 'more'; b.textContent = 'Messages plus anciens'; b.onclick = older;
+    log.prepend(b);
+  }
+  log.scrollTop += log.scrollHeight - h;
+}
+
+(async () => {
+  const nav = document.getElementById('channels');
+  for (const c of await (await fetch('/api/channels')).json()) {
+    const b = document.createElement('button'); b.textContent = c.name; b.dataset.id = c.id;
+    b.onclick = () => load(c.id, c.name); nav.append(b);
+  }
+  new EventSource('/api/stream').onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.channel !== current) return;
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 50;
+    log.append(render(m));
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  };
+})();
+</script>
+</body>
+</html>
