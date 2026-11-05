@@ -13,6 +13,7 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 PASSWORD = os.environ.get("VIEWER_PASSWORD", "")
 PORT = int(os.environ.get("PORT", "8080"))
 HTML = Path(__file__).with_name("index.html")
+SEARCH_SCAN = 2000  # ponytail: les bots n'ont pas d'API de recherche Discord, on parcourt les N derniers messages
 
 intents = discord.Intents.default()
 intents.message_content = True  # à activer aussi dans le Developer Portal
@@ -21,6 +22,13 @@ listeners: set[asyncio.Queue] = set()
 
 
 def to_json(m: discord.Message) -> dict:
+    ref = m.reference.resolved if m.reference else None
+    if isinstance(ref, discord.Message):
+        reply = {"author": ref.author.display_name, "content": ref.clean_content[:120]}
+    elif isinstance(ref, discord.DeletedReferencedMessage):
+        reply = {"author": "", "content": "Message original supprimé"}
+    else:
+        reply = None
     return {
         "id": str(m.id),
         "channel": str(m.channel.id),
@@ -30,7 +38,22 @@ def to_json(m: discord.Message) -> dict:
         "content": m.clean_content,
         "time": m.created_at.isoformat(),
         "attachments": [a.url for a in m.attachments],
+        "edited": m.edited_at is not None,
+        "reply": reply,
+        "reactions": [
+            {
+                "emoji": r.emoji if isinstance(r.emoji, str) else r.emoji.name,
+                "url": str(r.emoji.url) if getattr(r.emoji, "id", None) else None,
+                "count": r.count,
+            }
+            for r in m.reactions
+        ],
     }
+
+
+def matches(msg: dict, q: str) -> bool:
+    q = q.lower()
+    return q in msg["content"].lower() or q in msg["author"].lower()
 
 
 def password_ok(header: str, password: str) -> bool:
@@ -65,18 +88,41 @@ async def channels(_):
     return web.json_response(out)
 
 
-async def messages(request):
+def text_channel(request) -> discord.TextChannel:
     try:
         channel = client.get_channel(int(request.match_info["id"]))
-        before = request.query.get("before")
-        before = discord.Object(int(before)) if before else None
     except ValueError:
         raise web.HTTPBadRequest()
     if not isinstance(channel, discord.TextChannel):
         raise web.HTTPNotFound()
+    return channel
+
+
+async def messages(request):
+    channel = text_channel(request)
+    try:
+        before = request.query.get("before")
+        before = discord.Object(int(before)) if before else None
+    except ValueError:
+        raise web.HTTPBadRequest()
     # Historique complet possible, y compris avant l'arrivée du bot (paquets de 50).
     msgs = [to_json(m) async for m in channel.history(limit=50, before=before)]
     return web.json_response(msgs[::-1])
+
+
+async def search(request):
+    channel = text_channel(request)
+    q = request.query.get("q", "").strip()
+    if not q:
+        raise web.HTTPBadRequest()
+    found = []
+    async for m in channel.history(limit=SEARCH_SCAN):
+        d = to_json(m)
+        if matches(d, q):
+            found.append(d)
+            if len(found) >= 100:
+                break
+    return web.json_response(found[::-1])
 
 
 async def stream(request):
@@ -98,12 +144,66 @@ async def stream(request):
     return resp
 
 
-@client.event
-async def on_message(m: discord.Message):
-    data = to_json(m)
+def broadcast(data: dict):
     for q in list(listeners):
         if not q.full():
             q.put_nowait(data)
+
+
+async def refresh(channel_id: int, message_id: int):
+    """Renvoie la version à jour d'un message (édition, réactions)."""
+    if not listeners:
+        return
+    channel = client.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        # ponytail: 1 appel API par événement, à regrouper si un salon spamme les réactions
+        m = await channel.fetch_message(message_id)
+    except discord.HTTPException:
+        return
+    broadcast({"type": "update", **to_json(m)})
+
+
+@client.event
+async def on_message(m: discord.Message):
+    broadcast({"type": "new", **to_json(m)})
+
+
+@client.event
+async def on_raw_message_edit(p: discord.RawMessageUpdateEvent):
+    await refresh(p.channel_id, p.message_id)
+
+
+@client.event
+async def on_raw_reaction_add(p: discord.RawReactionActionEvent):
+    await refresh(p.channel_id, p.message_id)
+
+
+@client.event
+async def on_raw_reaction_remove(p: discord.RawReactionActionEvent):
+    await refresh(p.channel_id, p.message_id)
+
+
+@client.event
+async def on_raw_reaction_clear(p: discord.RawReactionClearEvent):
+    await refresh(p.channel_id, p.message_id)
+
+
+@client.event
+async def on_raw_reaction_clear_emoji(p: discord.RawReactionClearEmojiEvent):
+    await refresh(p.channel_id, p.message_id)
+
+
+@client.event
+async def on_raw_message_delete(p: discord.RawMessageDeleteEvent):
+    broadcast({"type": "delete", "id": str(p.message_id), "channel": str(p.channel_id)})
+
+
+@client.event
+async def on_raw_bulk_message_delete(p: discord.RawBulkMessageDeleteEvent):
+    for mid in p.message_ids:
+        broadcast({"type": "delete", "id": str(mid), "channel": str(p.channel_id)})
 
 
 async def main():
@@ -114,6 +214,7 @@ async def main():
         web.get("/", index),
         web.get("/api/channels", channels),
         web.get("/api/channels/{id}/messages", messages),
+        web.get("/api/channels/{id}/search", search),
         web.get("/api/stream", stream),
     ])
     runner = web.AppRunner(app)
