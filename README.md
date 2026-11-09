@@ -15,6 +15,15 @@ recherche par mot ou auteur (sur les 2000 derniers messages du salon).
 ## 2. Lancer
 ```bash
 pip install -r requirements.txt
+```
+Puis, selon ton terminal :
+
+**Windows (PowerShell)**
+```powershell
+$env:DISCORD_TOKEN="xxx"; $env:VIEWER_PASSWORD="motdepasse"; python viewer/bot.py
+```
+**Linux / Mac**
+```bash
 DISCORD_TOKEN=xxx VIEWER_PASSWORD=motdepasse python viewer/bot.py
 ```
 Ouvre http://localhost:8080 (identifiant au choix, mot de passe = `VIEWER_PASSWORD`).
