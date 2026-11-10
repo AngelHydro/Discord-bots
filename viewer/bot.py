@@ -1,6 +1,7 @@
 """Bot Discord + interface web pour lire les salons sans être sur le serveur."""
 import asyncio
 import base64
+import errno
 import hmac
 import json
 import os
@@ -29,6 +30,17 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 PASSWORD = os.environ.get("VIEWER_PASSWORD", "")
 PORT = int(os.environ.get("PORT", "8080"))
 HTML = Path(__file__).with_name("index.html")
+ICON = Path(__file__).with_name("icon.png")
+MANIFEST = {
+    "name": "Discord Viewer",
+    "short_name": "Discord",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#313338",
+    "theme_color": "#2b2d31",
+    "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png"}],
+}
+PUBLIC = {"/manifest.json", "/icon.png"}  # le téléphone les charge sans mot de passe ; aucune donnée Discord
 SEARCH_SCAN = 2000  # ponytail: les bots n'ont pas d'API de recherche Discord, on parcourt les N derniers messages
 
 intents = discord.Intents.default()
@@ -95,13 +107,21 @@ def password_ok(header: str, password: str) -> bool:
 
 @web.middleware
 async def auth(request, handler):
-    if not password_ok(request.headers.get("Authorization", ""), PASSWORD):
+    if request.path not in PUBLIC and not password_ok(request.headers.get("Authorization", ""), PASSWORD):
         return web.Response(status=401, headers={"WWW-Authenticate": 'Basic realm="viewer"'})
     return await handler(request)
 
 
 async def index(_):
     return web.FileResponse(HTML)
+
+
+async def manifest(_):
+    return web.json_response(MANIFEST, content_type="application/manifest+json")
+
+
+async def icon(_):
+    return web.FileResponse(ICON)
 
 
 async def channels(_):
@@ -238,6 +258,8 @@ async def main():
     app = web.Application(middlewares=[auth])
     app.add_routes([
         web.get("/", index),
+        web.get("/manifest.json", manifest),
+        web.get("/icon.png", icon),
         web.get("/api/channels", channels),
         web.get("/api/channels/{id}/messages", messages),
         web.get("/api/channels/{id}/search", search),
@@ -245,7 +267,17 @@ async def main():
     ])
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    try:
+        await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    except OSError as e:
+        if e.errno in (errno.EADDRINUSE, 10048):  # 10048 = port occupé sous Windows
+            raise SystemExit(
+                f"Le port {PORT} est déjà utilisé : le bot tourne sûrement déjà "
+                f"(autre fenêtre ou démarrage automatique).\n"
+                f"Ouvre directement http://localhost:{PORT}, ou ferme l'autre bot. "
+                f"Sinon, mets PORT=8081 dans le fichier .env."
+            )
+        raise
     print(f"Interface sur http://localhost:{PORT}")
     print(f"Depuis un téléphone sur le même Wi-Fi : http://{lan_ip()}:{PORT}")
     async with client:
