@@ -3,7 +3,8 @@
 Bot Discord qui affiche les messages des salons dans une page web façon chat (historique + direct).
 
 Fonctions : historique complet, messages en direct, réponses, réactions, messages modifiés / supprimés,
-recherche par mot ou auteur (sur les 2000 derniers messages du salon).
+recherche par mot ou auteur (sur les 2000 derniers messages du salon), fils et forums, mise en forme Discord
+(gras, liens, code, mentions, emojis…), compteur de non-lus, notifications sur le téléphone.
 
 ## 1. Créer le bot
 1. https://discord.com/developers/applications → *New Application* → onglet **Bot** → *Reset Token* (copie-le, garde-le secret).
@@ -38,6 +39,20 @@ Ouvre http://localhost:8080 (identifiant au choix, mot de passe = `VIEWER_PASSWO
 
 Le PC doit rester allumé avec le bot lancé.
 
-Test : `cd viewer && python test_bot.py`
+## 4. Notifications sur le téléphone (facultatif)
+1. Installe l'appli gratuite **ntfy** (Android / iPhone).
+2. Dans `.env`, mets `NTFY_TOPIC=` suivi d'un nom long et aléatoire (invente-le, ne copie pas un exemple trouvé en ligne).
+   Ce nom fait office de mot de passe : quiconque le connaît peut lire les notifications.
+3. Dans l'appli ntfy : **+** → s'abonner à ce même nom.
+4. Relance le bot.
+
+Filtres facultatifs dans `.env` :
+- `NOTIFY_CHANNELS=annonces,général` : seulement ces salons (et leurs fils) ;
+- `NOTIFY_KEYWORDS=soirée,urgent` : seulement les messages contenant un de ces mots.
+
+Le texte des messages transite par le serveur public ntfy.sh. Pour l'éviter, tu peux héberger ntfy toi-même
+et indiquer son adresse avec `NTFY_SERVER=`.
+
+Tests : `cd viewer && python test_bot.py && node test_format.js`
 
 > Si tu l'exposes sur Internet, mets-le derrière HTTPS (ex. Caddy), sinon le mot de passe circule en clair.

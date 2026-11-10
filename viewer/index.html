@@ -19,6 +19,16 @@
   nav { width:260px; background:var(--side); overflow-y:auto; padding:8px; flex-shrink:0; }
   nav button { display:block; width:100%; text-align:left; background:none; border:0; color:var(--muted); padding:6px 8px; border-radius:4px; cursor:pointer; font:inherit; }
   nav button:hover, nav button.on { background:var(--hover); color:var(--text); }
+  nav button { display:flex; align-items:center; gap:6px; }
+  nav .label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  nav .guild { color:var(--text); font-size:12px; font-weight:700; text-transform:uppercase; padding:12px 8px 4px; }
+  nav .forum { color:var(--muted); padding:6px 8px; }
+  nav .thread { padding-left:22px; font-size:14px; }
+  nav .older { padding-left:22px; font-size:13px; font-style:italic; }
+  nav .unread .label { color:var(--text); font-weight:600; }
+  nav .badge { background:#f23f43; color:#fff; border-radius:8px; font-size:11px; font-weight:700; padding:0 6px; line-height:16px; }
+  nav .badge:empty { display:none; }
+  nav .unread .badge:empty { display:block; width:8px; height:8px; padding:0; border-radius:50%; background:var(--text); }
   main { flex:1; display:flex; flex-direction:column; min-width:0; }
   header { padding:8px 16px; border-bottom:1px solid #1f2023; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   #title { font-weight:600; flex:1; min-width:0; }
@@ -38,6 +48,19 @@
   .msg.deleted .txt { text-decoration:line-through; color:var(--muted); }
   .msg.deleted .who::after { content:" — supprimé"; color:#f23f43; font-weight:400; font-size:12px; }
   .txt img { max-width:100%; max-height:240px; display:block; margin-top:4px; border-radius:4px; }
+  .txt img.emoji { display:inline; width:22px; height:22px; margin:0; vertical-align:middle; border-radius:0; }
+  .txt code { background:#2b2d31; border-radius:4px; padding:1px 4px; font:13px/1.4 ui-monospace,Consolas,monospace; }
+  .txt pre { background:#2b2d31; border:1px solid #1e1f22; border-radius:4px; padding:8px; margin:4px 0; overflow-x:auto; white-space:pre; }
+  .txt pre code { background:none; padding:0; }
+  .txt a { color:#00a8fc; }
+  .mention { background:rgba(88,101,242,.3); color:#c9cdfb; border-radius:3px; padding:0 2px; }
+  .time { background:#2b2d31; border-radius:3px; padding:0 2px; }
+  .spoiler { background:#1e1f22; color:transparent; border-radius:3px; cursor:pointer; }
+  .spoiler.shown { background:#3a3c42; color:inherit; cursor:auto; }
+  .quote { display:inline-block; border-left:4px solid #4e5058; padding-left:8px; }
+  .h1, .h2, .h3 { display:inline-block; font-weight:700; margin:4px 0; }
+  .h1 { font-size:1.5em; } .h2 { font-size:1.25em; } .h3 { font-size:1.1em; }
+  .sub { color:var(--muted); font-size:12px; }
   @media (max-width:640px) { body { flex-direction:column; } nav { width:100%; max-height:30vh; } }
 </style>
 </head>
@@ -50,6 +73,7 @@
   </header>
   <div id="log"></div>
 </main>
+<script src="/format.js"></script>
 <script>
 let current = null, oldest = null, searching = false;
 const log = document.getElementById('log');
@@ -62,7 +86,8 @@ function render(m) {
   who.textContent = m.author + (m.bot ? ' [BOT]' : '');
   const t = document.createElement('small'); t.textContent = new Date(m.time).toLocaleString('fr-FR');
   who.append(t);
-  const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = m.content; // textContent = pas d'injection HTML
+  const txt = document.createElement('div'); txt.className = 'txt';
+  txt.innerHTML = formatDiscord(m.content, m.mentions); // format.js échappe tout le texte avant d'ajouter ses balises
   if (m.edited) { const e = document.createElement('span'); e.className = 'edited'; e.textContent = '(modifié)'; txt.append(e); }
   for (const url of m.attachments) {
     const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener';
@@ -91,13 +116,87 @@ function render(m) {
   return row;
 }
 
-async function load(id, name) {
+// ---- Non-lus : compteur en direct + pastille pour ce qui est arrivé pendant l'absence
+let seen = {};
+try { seen = JSON.parse(localStorage.getItem('seen') || '{}'); } catch {}
+const counts = {}, titles = {}, lastIds = {};
+const newer = (a, b) => BigInt(a || 0) > BigInt(b || 0);
+
+function saveSeen() { try { localStorage.setItem('seen', JSON.stringify(seen)); } catch {} }
+
+function paint(id) {
+  const b = document.querySelector(`nav button[data-id="${id}"]`);
+  if (!b) return;
+  b.classList.toggle('unread', newer(lastIds[id], seen[id]));
+  b.querySelector('.badge').textContent = counts[id] ? (counts[id] > 99 ? '99+' : counts[id]) : '';
+  const total = Object.values(counts).reduce((a, n) => a + n, 0);
+  document.title = (total ? `(${total}) ` : '') + 'Discord Viewer';
+}
+
+function markRead(id) {
+  counts[id] = 0;
+  if (newer(lastIds[id], seen[id])) { seen[id] = lastIds[id]; saveSeen(); }
+  paint(id);
+}
+
+function navButton(id, label, cls, title, last) {
+  const b = document.createElement('button'); b.dataset.id = id; if (cls) b.className = cls;
+  const l = document.createElement('span'); l.className = 'label'; l.textContent = label;
+  const badge = document.createElement('span'); badge.className = 'badge';
+  b.append(l, badge);
+  titles[id] = title; lastIds[id] = last;
+  if (!(id in seen)) seen[id] = last; // nouveau salon : rien de non lu au départ
+  b.onclick = () => load(id);
+  b.classList.toggle('on', id === current);
+  return b;
+}
+
+async function buildNav() {
+  const res = await fetch('/api/channels');
+  if (!res.ok) return;
+  const nav = document.getElementById('channels');
+  nav.innerHTML = '';
+  let guild = null;
+  for (const c of await res.json()) {
+    if (c.guild !== guild) {
+      guild = c.guild;
+      const g = document.createElement('div'); g.className = 'guild'; g.textContent = guild; nav.append(g);
+    }
+    const base = `${c.guild} / #${c.name}`;
+    if (c.forum) {
+      const f = document.createElement('div'); f.className = 'forum'; f.textContent = '💬 ' + c.name; nav.append(f);
+    } else {
+      nav.append(navButton(c.id, '# ' + c.name, '', base, c.last));
+    }
+    for (const t of c.threads) nav.append(navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last));
+    if (c.forum) {
+      const more = document.createElement('button'); more.className = 'older';
+      more.textContent = 'Anciens posts…';
+      more.onclick = async () => {
+        more.textContent = 'Chargement…';
+        const r = await fetch(`/api/channels/${c.id}/archived`);
+        const list = r.ok ? await r.json() : [];
+        more.replaceWith(...list.map(t => navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last)));
+        list.forEach(t => paint(t.id));
+      };
+      nav.append(more);
+    }
+  }
+  saveSeen();
+  Object.keys(titles).forEach(paint);
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && current) markRead(current); });
+
+async function load(id) {
+  const name = titles[id] || '';
   current = id; oldest = null; searching = false; log.innerHTML = '';
   document.getElementById('title').textContent = name;
   form.hidden = false; form.querySelector('input').value = '';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.id === id));
   await older();
   log.scrollTop = log.scrollHeight;
+  if (id === current) markRead(id);
 }
 
 async function older() {
@@ -107,6 +206,7 @@ async function older() {
   document.getElementById('more')?.remove();
   const h = log.scrollHeight;
   log.prepend(...msgs.map(render));
+  if (msgs.length && !oldest && newer(msgs[msgs.length - 1].id, lastIds[id])) lastIds[id] = msgs[msgs.length - 1].id;
   if (msgs.length) {
     oldest = msgs[0].id;
     const b = document.createElement('button'); b.id = 'more'; b.textContent = 'Messages plus anciens'; b.onclick = older;
@@ -120,7 +220,7 @@ form.onsubmit = async e => {
   e.preventDefault();
   const q = form.querySelector('input').value.trim();
   if (!q || !current) return;
-  const id = current, name = document.getElementById('title').textContent;
+  const id = current;
   searching = true; log.textContent = 'Recherche…';
   const res = await fetch(`/api/channels/${id}/search?q=${encodeURIComponent(q)}`);
   if (id !== current || !searching) return;
@@ -128,18 +228,20 @@ form.onsubmit = async e => {
   log.innerHTML = '';
   const b = document.createElement('div'); b.className = 'banner';
   b.textContent = `${msgs.length} résultat(s) pour « ${q} »`;
-  const back = document.createElement('button'); back.textContent = 'Retour'; back.onclick = () => load(id, name);
+  const back = document.createElement('button'); back.textContent = 'Retour'; back.onclick = () => load(id);
   b.append(back); log.append(b, ...msgs.map(render));
 };
 
 (async () => {
-  const nav = document.getElementById('channels');
-  for (const c of await (await fetch('/api/channels')).json()) {
-    const b = document.createElement('button'); b.textContent = c.name; b.dataset.id = c.id;
-    b.onclick = () => load(c.id, c.name); nav.append(b);
-  }
+  await buildNav();
   new EventSource('/api/stream').onmessage = e => {
     const m = JSON.parse(e.data);
+    if (m.type === 'channels') { buildNav(); return; }
+    if (m.type === 'new') {
+      if (newer(m.id, lastIds[m.channel])) lastIds[m.channel] = m.id;
+      if (m.channel === current && !document.hidden) markRead(m.channel);
+      else { counts[m.channel] = (counts[m.channel] || 0) + 1; paint(m.channel); }
+    }
     if (m.channel !== current) return;
     const row = log.querySelector(`.msg[data-id="${m.id}"]`);
     if (m.type === 'delete') { row?.classList.add('deleted'); return; }
