@@ -1,6 +1,10 @@
 import base64
 
-from bot import matches, password_ok
+import os
+import tempfile
+from pathlib import Path
+
+from bot import load_env, matches, password_ok
 
 
 def h(s):
@@ -17,4 +21,12 @@ msg = {"author": "Alice", "content": "Rendez-vous Demain"}
 assert matches(msg, "demain")
 assert matches(msg, "ALI")
 assert not matches(msg, "bob")
+with tempfile.TemporaryDirectory() as d:
+    env = Path(d) / ".env"
+    env.write_text('# commentaire\nT_A="abc=1"\nT_B = x \nvide\n', encoding="utf-8")
+    os.environ["T_B"] = "garde"
+    load_env(env)
+    assert os.environ["T_A"] == "abc=1"
+    assert os.environ["T_B"] == "garde"  # une variable déjà définie n'est pas écrasée
+    load_env(Path(d) / "absent")  # fichier manquant : pas d'erreur
 print("ok")

@@ -4,10 +4,26 @@ import base64
 import hmac
 import json
 import os
+import socket
 from pathlib import Path
 
 import discord
 from aiohttp import web
+
+
+
+def load_env(path: Path):
+    """Charge un fichier .env (CLE=valeur). Les variables déjà définies gardent la priorité."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key and not key.startswith("#"):
+            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+
+
+load_env(Path(__file__).resolve().parent.parent / ".env")
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 PASSWORD = os.environ.get("VIEWER_PASSWORD", "")
@@ -19,6 +35,16 @@ intents = discord.Intents.default()
 intents.message_content = True  # à activer aussi dans le Developer Portal
 client = discord.Client(intents=intents)
 listeners: set[asyncio.Queue] = set()
+
+
+def lan_ip() -> str:
+    """IP du PC sur le réseau local (aucun paquet n'est envoyé)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.168.0.1", 1))
+            return s.getsockname()[0]
+        except OSError:
+            return "IP-du-PC"
 
 
 def to_json(m: discord.Message) -> dict:
@@ -208,7 +234,7 @@ async def on_raw_bulk_message_delete(p: discord.RawBulkMessageDeleteEvent):
 
 async def main():
     if not TOKEN or not PASSWORD:
-        raise SystemExit("Définis DISCORD_TOKEN et VIEWER_PASSWORD.")
+        raise SystemExit("Définis DISCORD_TOKEN et VIEWER_PASSWORD (dans le fichier .env).")
     app = web.Application(middlewares=[auth])
     app.add_routes([
         web.get("/", index),
@@ -221,6 +247,7 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     print(f"Interface sur http://localhost:{PORT}")
+    print(f"Depuis un téléphone sur le même Wi-Fi : http://{lan_ip()}:{PORT}")
     async with client:
         await client.start(TOKEN)
 
