@@ -19,6 +19,8 @@ pip install -r requirements.txt
 Puis copie `.env.example` en `.env` et remplis-le (token + mot de passe). Ce fichier n'est jamais envoyé sur GitHub.
 
 **Windows** : double-clique sur `lancer.bat`.
+Pour qu'il se lance tout seul à chaque démarrage du PC (sans fenêtre) : double-clique une fois sur
+`demarrage-auto.bat`. Re-double-clique dessus pour désactiver. Les erreurs éventuelles vont dans `viewer.log`.
 **Linux / Mac** : `python viewer/bot.py`
 
 Ouvre http://localhost:8080 (identifiant au choix, mot de passe = `VIEWER_PASSWORD`).
@@ -29,6 +31,10 @@ Ouvre http://localhost:8080 (identifiant au choix, mot de passe = `VIEWER_PASSWO
 - **Hors de chez toi** : installe [Tailscale](https://tailscale.com) (gratuit) sur le PC et le téléphone,
   connecte-les au même compte, puis ouvre `http://<IP Tailscale du PC>:8080` (IP en 100.x.x.x).
   Rien n'est ouvert sur Internet, la connexion est chiffrée.
+
+**Comme une appli** : ouvre l'adresse sur le téléphone, puis
+- iPhone (Safari) : bouton Partager → *Sur l'écran d'accueil* ;
+- Android (Chrome) : menu ⋮ → *Ajouter à l'écran d'accueil*.
 
 Le PC doit rester allumé avec le bot lancé.
 
