@@ -16,17 +16,21 @@ recherche par mot ou auteur (sur les 2000 derniers messages du salon).
 ```bash
 pip install -r requirements.txt
 ```
-Puis, selon ton terminal :
+Puis copie `.env.example` en `.env` et remplis-le (token + mot de passe). Ce fichier n'est jamais envoyé sur GitHub.
 
-**Windows (PowerShell)**
-```powershell
-$env:DISCORD_TOKEN="xxx"; $env:VIEWER_PASSWORD="motdepasse"; python viewer/bot.py
-```
-**Linux / Mac**
-```bash
-DISCORD_TOKEN=xxx VIEWER_PASSWORD=motdepasse python viewer/bot.py
-```
+**Windows** : double-clique sur `lancer.bat`.
+**Linux / Mac** : `python viewer/bot.py`
+
 Ouvre http://localhost:8080 (identifiant au choix, mot de passe = `VIEWER_PASSWORD`).
+
+## 3. Depuis un téléphone
+- **Même Wi-Fi que le PC** : ouvre l'adresse `http://192.168.x.x:8080` affichée au démarrage.
+  Au premier lancement, Windows demande d'autoriser Python dans le pare-feu : coche **Réseaux privés**.
+- **Hors de chez toi** : installe [Tailscale](https://tailscale.com) (gratuit) sur le PC et le téléphone,
+  connecte-les au même compte, puis ouvre `http://<IP Tailscale du PC>:8080` (IP en 100.x.x.x).
+  Rien n'est ouvert sur Internet, la connexion est chiffrée.
+
+Le PC doit rester allumé avec le bot lancé.
 
 Test : `cd viewer && python test_bot.py`
 
