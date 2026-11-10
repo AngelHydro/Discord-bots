@@ -8,6 +8,7 @@ import os
 import socket
 from pathlib import Path
 
+import aiohttp
 import discord
 from aiohttp import web
 
@@ -30,6 +31,7 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 PASSWORD = os.environ.get("VIEWER_PASSWORD", "")
 PORT = int(os.environ.get("PORT", "8080"))
 HTML = Path(__file__).with_name("index.html")
+FORMAT_JS = Path(__file__).with_name("format.js")
 ICON = Path(__file__).with_name("icon.png")
 MANIFEST = {
     "name": "Discord Viewer",
@@ -43,10 +45,26 @@ MANIFEST = {
 PUBLIC = {"/manifest.json", "/icon.png"}  # le téléphone les charge sans mot de passe ; aucune donnée Discord
 SEARCH_SCAN = 2000  # ponytail: les bots n'ont pas d'API de recherche Discord, on parcourt les N derniers messages
 
+
+
+def csv_env(name: str) -> list[str]:
+    return [x.strip().lstrip("#").lower() for x in os.environ.get(name, "").split(",") if x.strip()]
+
+
+# Notifications téléphone via ntfy (appli gratuite). Vide = désactivé.
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+NOTIFY_CHANNELS = set(csv_env("NOTIFY_CHANNELS"))  # noms ou IDs ; vide = tous
+NOTIFY_KEYWORDS = csv_env("NOTIFY_KEYWORDS")  # vide = tous les messages
+
+READABLE = (discord.TextChannel, discord.Thread)
+
 intents = discord.Intents.default()
 intents.message_content = True  # à activer aussi dans le Developer Portal
 client = discord.Client(intents=intents)
 listeners: set[asyncio.Queue] = set()
+http: aiohttp.ClientSession | None = None
+pending: set[asyncio.Task] = set()
 
 
 def lan_ip() -> str:
@@ -73,7 +91,13 @@ def to_json(m: discord.Message) -> dict:
         "author": m.author.display_name,
         "avatar": m.author.display_avatar.url,
         "bot": m.author.bot,
-        "content": m.clean_content,
+        "content": m.content,  # brut, mis en forme par format.js
+        "text": m.clean_content,  # texte simple (recherche)
+        "mentions": {
+            "users": {str(u.id): u.display_name for u in m.mentions},
+            "roles": {str(r.id): r.name for r in m.role_mentions},
+            "channels": {str(c.id): c.name for c in m.channel_mentions},
+        },
         "time": m.created_at.isoformat(),
         "attachments": [a.url for a in m.attachments],
         "edited": m.edited_at is not None,
@@ -91,7 +115,15 @@ def to_json(m: discord.Message) -> dict:
 
 def matches(msg: dict, q: str) -> bool:
     q = q.lower()
-    return q in msg["content"].lower() or q in msg["author"].lower()
+    return q in msg["text"].lower() or q in msg["author"].lower()
+
+
+def should_notify(names: list[str], ids: list[str], text: str, channels: set[str], keywords: list[str]) -> bool:
+    """Filtre des notifications : salon (nom ou ID, salon parent compris) puis mots-clés."""
+    if channels and not channels & ({n.lower() for n in names} | set(ids)):
+        return False
+    text = text.lower()
+    return not keywords or any(k in text for k in keywords)
 
 
 def password_ok(header: str, password: str) -> bool:
@@ -124,28 +156,67 @@ async def icon(_):
     return web.FileResponse(ICON)
 
 
+async def format_js(_):
+    return web.FileResponse(FORMAT_JS)
+
+
+def thread_json(t: discord.Thread) -> dict:
+    return {"id": str(t.id), "name": t.name, "last": str(t.last_message_id or t.id)}
+
+
 async def channels(_):
     out = []
     for g in client.guilds:
-        for c in g.text_channels:
+        parents = sorted(g.text_channels + g.forums, key=lambda c: c.position)
+        for c in parents:
             perms = c.permissions_for(g.me)
-            if perms.view_channel and perms.read_message_history:
-                out.append({"id": str(c.id), "name": f"{g.name} / #{c.name}"})
+            if not (perms.view_channel and perms.read_message_history):
+                continue
+            forum = isinstance(c, discord.ForumChannel)
+            out.append({
+                "id": str(c.id),
+                "guild": g.name,
+                "name": c.name,
+                "forum": forum,
+                "last": None if forum else str(c.last_message_id or 0),
+                # Fils actifs. ponytail: les fils archivés des salons texte ne sont pas listés, seulement ceux des forums
+                "threads": [thread_json(t) for t in c.threads if t.permissions_for(g.me).read_message_history],
+            })
     return web.json_response(out)
 
 
-def text_channel(request) -> discord.TextChannel:
+async def archived(request):
     try:
-        channel = client.get_channel(int(request.match_info["id"]))
+        forum = client.get_channel(int(request.match_info["id"]))
     except ValueError:
         raise web.HTTPBadRequest()
-    if not isinstance(channel, discord.TextChannel):
+    if not isinstance(forum, discord.ForumChannel):
+        raise web.HTTPNotFound()
+    try:
+        threads = [thread_json(t) async for t in forum.archived_threads(limit=50)]
+    except discord.Forbidden:
+        raise web.HTTPForbidden()
+    return web.json_response(threads)
+
+
+async def text_channel(request) -> discord.TextChannel | discord.Thread:
+    try:
+        cid = int(request.match_info["id"])
+    except ValueError:
+        raise web.HTTPBadRequest()
+    channel = client.get_channel(cid)
+    if channel is None:  # fil archivé : pas en cache
+        try:
+            channel = await client.fetch_channel(cid)
+        except discord.HTTPException:
+            raise web.HTTPNotFound()
+    if not isinstance(channel, READABLE):
         raise web.HTTPNotFound()
     return channel
 
 
 async def messages(request):
-    channel = text_channel(request)
+    channel = await text_channel(request)
     try:
         before = request.query.get("before")
         before = discord.Object(int(before)) if before else None
@@ -157,7 +228,7 @@ async def messages(request):
 
 
 async def search(request):
-    channel = text_channel(request)
+    channel = await text_channel(request)
     q = request.query.get("q", "").strip()
     if not q:
         raise web.HTTPBadRequest()
@@ -201,7 +272,7 @@ async def refresh(channel_id: int, message_id: int):
     if not listeners:
         return
     channel = client.get_channel(channel_id)
-    if not isinstance(channel, discord.TextChannel):
+    if not isinstance(channel, READABLE):
         return
     try:
         # ponytail: 1 appel API par événement, à regrouper si un salon spamme les réactions
@@ -211,9 +282,39 @@ async def refresh(channel_id: int, message_id: int):
     broadcast({"type": "update", **to_json(m)})
 
 
+async def notify(m: discord.Message):
+    ch = m.channel
+    parent = getattr(ch, "parent", None)
+    names = [ch.name] + ([parent.name] if parent else [])
+    ids = [str(ch.id)] + ([str(parent.id)] if parent else [])
+    text = m.clean_content or ("(pièce jointe)" if m.attachments else "")
+    if not text or not should_notify(names, ids, text, NOTIFY_CHANNELS, NOTIFY_KEYWORDS):
+        return
+    where = f"#{parent.name} › {ch.name}" if parent else f"#{ch.name}"
+    try:
+        # JSON = accents OK ; le nom du topic sert de mot de passe, il doit être long et aléatoire
+        await http.post(NTFY_SERVER, json={
+            "topic": NTFY_TOPIC,
+            "title": f"{m.author.display_name} · {where}",
+            "message": text[:500],
+            "tags": ["speech_balloon"],
+        }, timeout=aiohttp.ClientTimeout(total=10))
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        print(f"Notification ntfy échouée : {e!r}")
+
+
 @client.event
 async def on_message(m: discord.Message):
     broadcast({"type": "new", **to_json(m)})
+    if NTFY_TOPIC and http and m.author != client.user:
+        task = asyncio.create_task(notify(m))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+
+@client.event
+async def on_thread_create(_t: discord.Thread):
+    broadcast({"type": "channels"})  # la page recharge la liste des salons
 
 
 @client.event
@@ -260,6 +361,8 @@ async def main():
         web.get("/", index),
         web.get("/manifest.json", manifest),
         web.get("/icon.png", icon),
+        web.get("/format.js", format_js),
+        web.get("/api/channels/{id}/archived", archived),
         web.get("/api/channels", channels),
         web.get("/api/channels/{id}/messages", messages),
         web.get("/api/channels/{id}/search", search),
@@ -280,7 +383,10 @@ async def main():
         raise
     print(f"Interface sur http://localhost:{PORT}")
     print(f"Depuis un téléphone sur le même Wi-Fi : http://{lan_ip()}:{PORT}")
-    async with client:
+    if NTFY_TOPIC:
+        print(f"Notifications ntfy actives (topic : {NTFY_TOPIC})")
+    global http
+    async with aiohttp.ClientSession() as http, client:
         await client.start(TOKEN)
 
 
