@@ -41,7 +41,7 @@ Le PC doit rester allumé avec le bot lancé.
 
 ## 4. Notifications sur le téléphone (facultatif)
 1. Installe l'appli gratuite **ntfy** (Android / iPhone).
-2. Dans `.env`, mets `NTFY_TOPIC=` suivi d'un nom long et aléatoire (exemple dans `.env.example`).
+2. Dans `.env`, mets `NTFY_TOPIC=` suivi d'un nom long et aléatoire (invente-le, ne copie pas un exemple trouvé en ligne).
    Ce nom fait office de mot de passe : quiconque le connaît peut lire les notifications.
 3. Dans l'appli ntfy : **+** → s'abonner à ce même nom.
 4. Relance le bot.
