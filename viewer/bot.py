@@ -33,6 +33,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 HTML = Path(__file__).with_name("index.html")
 FORMAT_JS = Path(__file__).with_name("format.js")
 ICON = Path(__file__).with_name("icon.png")
+# Le navigateur doit revérifier la page à chaque ouverture, sinon il garde une vieille version après une mise à jour.
+NO_CACHE = {"Cache-Control": "no-cache"}
 MANIFEST = {
     "name": "Discord Viewer",
     "short_name": "Discord",
@@ -145,7 +147,7 @@ async def auth(request, handler):
 
 
 async def index(_):
-    return web.FileResponse(HTML)
+    return web.FileResponse(HTML, headers=NO_CACHE)
 
 
 async def manifest(_):
@@ -157,7 +159,7 @@ async def icon(_):
 
 
 async def format_js(_):
-    return web.FileResponse(FORMAT_JS)
+    return web.FileResponse(FORMAT_JS, headers=NO_CACHE)
 
 
 def thread_json(t: discord.Thread) -> dict:
