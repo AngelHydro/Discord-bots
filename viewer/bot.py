@@ -63,7 +63,8 @@ READABLE = (discord.TextChannel, discord.Thread)
 
 intents = discord.Intents.default()
 intents.message_content = True  # à activer aussi dans le Developer Portal
-client = discord.Client(intents=intents)
+# Statut "invisible" : le bot apparaît hors ligne dans la liste des membres (il y figure toujours).
+client = discord.Client(intents=intents, status=discord.Status.invisible)
 listeners: set[asyncio.Queue] = set()
 http: aiohttp.ClientSession | None = None
 pending: set[asyncio.Task] = set()
