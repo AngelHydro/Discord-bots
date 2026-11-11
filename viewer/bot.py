@@ -307,6 +307,13 @@ async def notify(m: discord.Message):
 
 
 @client.event
+async def on_ready():
+    # Redemandé ici en plus de la connexion : Discord ne l'applique pas toujours dès l'identification.
+    await client.change_presence(status=discord.Status.invisible)
+    print(f"Connecté à Discord en tant que {client.user} (statut : invisible)")
+
+
+@client.event
 async def on_message(m: discord.Message):
     broadcast({"type": "new", **to_json(m)})
     if NTFY_TOPIC and http and m.author != client.user:
