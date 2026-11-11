@@ -59,10 +59,13 @@ NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NOTIFY_CHANNELS = set(csv_env("NOTIFY_CHANNELS"))  # noms ou IDs ; vide = tous
 NOTIFY_KEYWORDS = csv_env("NOTIFY_KEYWORDS")  # vide = tous les messages
 
-READABLE = (discord.TextChannel, discord.Thread)
+READABLE = (discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel)  # salons vocaux : leur chat texte
+OFFLINE_SHOWN = 200  # ponytail: liste hors ligne tronquée, les gros serveurs en ont des milliers
 
 intents = discord.Intents.default()
 intents.message_content = True  # à activer aussi dans le Developer Portal
+intents.members = True  # "Server Members Intent" dans le Developer Portal
+intents.presences = True  # "Presence Intent" dans le Developer Portal
 # Statut "invisible" : le bot apparaît hors ligne dans la liste des membres (il y figure toujours).
 client = discord.Client(intents=intents, status=discord.Status.invisible)
 listeners: set[asyncio.Queue] = set()
@@ -121,6 +124,48 @@ def matches(msg: dict, q: str) -> bool:
     return q in msg["text"].lower() or q in msg["author"].lower()
 
 
+ACTIVITY_VERBS = {
+    discord.ActivityType.playing: "Joue à {}",
+    discord.ActivityType.streaming: "En stream : {}",
+    discord.ActivityType.listening: "Écoute {}",
+    discord.ActivityType.watching: "Regarde {}",
+    discord.ActivityType.competing: "En compétition : {}",
+}
+
+
+def activity_text(activities) -> str:
+    """Activité affichée sous le pseudo ; une vraie activité passe avant le statut personnalisé."""
+    custom = ""
+    for a in activities:
+        if a.type == discord.ActivityType.custom:
+            emoji = a.emoji if a.emoji and not getattr(a.emoji, "id", None) else ""  # emoji perso : pas d'image ici
+            custom = f"{emoji} {a.state or a.name or ''}".strip()
+        elif a.type in ACTIVITY_VERBS:
+            title, artist = getattr(a, "title", None), getattr(a, "artist", None)  # Spotify
+            return ACTIVITY_VERBS[a.type].format(f"{title} — {artist}" if title and artist else a.name)
+    return custom
+
+
+def group_members(rows: list[dict]) -> list[dict]:
+    """Groupes comme Discord : rôles affichés à part (du plus haut au plus bas), En ligne, Hors ligne."""
+    groups: dict[tuple, list] = {}
+    for r in rows:
+        hoist = r.pop("hoist")
+        if r["status"] == "offline":
+            key = (2, 0, "Hors ligne")
+        elif hoist:
+            key = (0, -hoist[0], hoist[1])
+        else:
+            key = (1, 0, "En ligne")
+        groups.setdefault(key, []).append(r)
+    out = []
+    for key in sorted(groups):
+        members = sorted(groups[key], key=lambda r: r["name"].casefold())
+        shown = members[:OFFLINE_SHOWN] if key[0] == 2 else members
+        out.append({"name": key[2], "count": len(members), "members": shown})
+    return out
+
+
 def should_notify(names: list[str], ids: list[str], text: str, channels: set[str], keywords: list[str]) -> bool:
     """Filtre des notifications : salon (nom ou ID, salon parent compris) puis mots-clés."""
     if channels and not channels & ({n.lower() for n in names} | set(ids)):
@@ -167,25 +212,70 @@ def thread_json(t: discord.Thread) -> dict:
     return {"id": str(t.id), "name": t.name, "last": str(t.last_message_id or t.id)}
 
 
+def voice_json(m: discord.Member) -> dict:
+    v = m.voice
+    return {
+        "name": m.display_name,
+        "avatar": m.display_avatar.url,
+        "mute": bool(v and (v.self_mute or v.mute)),
+        "deaf": bool(v and (v.self_deaf or v.deaf)),
+        "stream": bool(v and v.self_stream),
+        "video": bool(v and v.self_video),
+    }
+
+
+def channel_order(c) -> tuple:
+    # Comme Discord : par catégorie, puis texte avant vocal, puis position.
+    return (c.category.position if c.category else -1, isinstance(c, discord.VoiceChannel | discord.StageChannel), c.position)
+
+
 async def channels(_):
     out = []
     for g in client.guilds:
-        parents = sorted(g.text_channels + g.forums, key=lambda c: c.position)
+        parents = sorted(g.text_channels + g.forums + g.voice_channels + g.stage_channels, key=channel_order)
         for c in parents:
             perms = c.permissions_for(g.me)
-            if not (perms.view_channel and perms.read_message_history):
+            voice = isinstance(c, discord.VoiceChannel | discord.StageChannel)
+            if not perms.view_channel or not (voice or perms.read_message_history):
                 continue
             forum = isinstance(c, discord.ForumChannel)
             out.append({
                 "id": str(c.id),
                 "guild": g.name,
+                "guild_id": str(g.id),
                 "name": c.name,
                 "forum": forum,
+                "voice": voice,
+                "readable": perms.read_message_history,
+                "connected": [voice_json(m) for m in c.members] if voice else [],
                 "last": None if forum else str(c.last_message_id or 0),
                 # Fils actifs. ponytail: les fils archivés des salons texte ne sont pas listés, seulement ceux des forums
-                "threads": [thread_json(t) for t in c.threads if t.permissions_for(g.me).read_message_history],
+                "threads": [] if voice else [thread_json(t) for t in c.threads if t.permissions_for(g.me).read_message_history],
             })
     return web.json_response(out)
+
+
+def member_json(m: discord.Member) -> dict:
+    hoisted = max((r for r in m.roles if r.hoist), key=lambda r: r.position, default=None)
+    return {
+        "name": m.display_name,
+        "avatar": m.display_avatar.url,
+        "status": str(m.status),  # online / idle / dnd / offline (invisible = offline)
+        "activity": activity_text(m.activities),
+        "color": str(m.color) if m.color.value else None,
+        "bot": m.bot,
+        "hoist": (hoisted.position, hoisted.name) if hoisted else None,
+    }
+
+
+async def members(request):
+    try:
+        guild = client.get_guild(int(request.match_info["id"]))
+    except ValueError:
+        raise web.HTTPBadRequest()
+    if guild is None:
+        raise web.HTTPNotFound()
+    return web.json_response(group_members([member_json(m) for m in guild.members]))
 
 
 async def archived(request):
@@ -328,6 +418,47 @@ async def on_thread_create(_t: discord.Thread):
 
 
 @client.event
+async def on_voice_state_update(_m, _before, _after):
+    broadcast({"type": "channels"})  # qui est dans quel salon vocal
+
+
+dirty_guilds: set[int] = set()
+
+
+def members_changed(guild: discord.Guild):
+    # Les statuts changent sans arrêt sur un gros serveur : un seul envoi toutes les 2 s par serveur.
+    if guild.id in dirty_guilds:
+        return
+    dirty_guilds.add(guild.id)
+
+    def flush():
+        dirty_guilds.discard(guild.id)
+        broadcast({"type": "members", "guild": str(guild.id)})
+
+    asyncio.get_running_loop().call_later(2, flush)
+
+
+@client.event
+async def on_presence_update(_before, after: discord.Member):
+    members_changed(after.guild)
+
+
+@client.event
+async def on_member_update(_before, after: discord.Member):
+    members_changed(after.guild)
+
+
+@client.event
+async def on_member_join(m: discord.Member):
+    members_changed(m.guild)
+
+
+@client.event
+async def on_member_remove(m: discord.Member):
+    members_changed(m.guild)
+
+
+@client.event
 async def on_raw_message_edit(p: discord.RawMessageUpdateEvent):
     await refresh(p.channel_id, p.message_id)
 
@@ -373,6 +504,7 @@ async def main():
         web.get("/icon.png", icon),
         web.get("/format.js", format_js),
         web.get("/api/channels/{id}/archived", archived),
+        web.get("/api/guilds/{id}/members", members),
         web.get("/api/channels", channels),
         web.get("/api/channels/{id}/messages", messages),
         web.get("/api/channels/{id}/search", search),
@@ -396,8 +528,16 @@ async def main():
     if NTFY_TOPIC:
         print(f"Notifications ntfy actives (topic : {NTFY_TOPIC})")
     global http
-    async with aiohttp.ClientSession() as http, client:
-        await client.start(TOKEN)
+    try:
+        async with aiohttp.ClientSession() as http, client:
+            await client.start(TOKEN)
+    except discord.PrivilegedIntentsRequired:
+        raise SystemExit(
+            "Discord refuse la connexion : active les options du bot dans le Developer Portal\n"
+            "(https://discord.com/developers/applications > ton appli > Bot > Privileged Gateway Intents) :\n"
+            "  - Presence Intent\n  - Server Members Intent\n  - Message Content Intent\n"
+            "Puis relance le bot."
+        )
 
 
 if __name__ == "__main__":

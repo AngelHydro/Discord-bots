@@ -61,7 +61,28 @@
   .h1, .h2, .h3 { display:inline-block; font-weight:700; margin:4px 0; }
   .h1 { font-size:1.5em; } .h2 { font-size:1.25em; } .h3 { font-size:1.1em; }
   .sub { color:var(--muted); font-size:12px; }
-  @media (max-width:640px) { body { flex-direction:column; } nav { width:100%; max-height:30vh; } }
+  nav .voice-user { display:flex; align-items:center; gap:6px; padding:2px 8px 2px 26px; font-size:13px; color:var(--muted); }
+  nav .voice-user img { width:20px; height:20px; border-radius:50%; }
+  nav .voice-user .icons { margin-left:auto; font-size:11px; }
+  .live { background:#f23f43; color:#fff; border-radius:3px; padding:0 3px; font-weight:700; font-size:10px; }
+  aside { width:240px; background:var(--side); overflow-y:auto; padding:8px; flex-shrink:0; }
+  aside h3 { color:var(--muted); font-size:12px; text-transform:uppercase; margin:16px 8px 4px; }
+  .member { display:flex; align-items:center; gap:10px; padding:4px 8px; border-radius:4px; }
+  .member.offline { opacity:.4; }
+  .member .pic { position:relative; flex-shrink:0; }
+  .member .pic img { width:32px; height:32px; border-radius:50%; display:block; }
+  .dot { position:absolute; right:-2px; bottom:-2px; width:12px; height:12px; border-radius:50%; border:3px solid var(--side); }
+  .dot.online { background:#23a55a; } .dot.idle { background:#f0b232; } .dot.dnd { background:#f23f43; } .dot.offline { background:#80848e; }
+  .member .info { min-width:0; } .member .info div { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .member .act { color:var(--muted); font-size:12px; }
+  .tag { background:var(--accent); color:#fff; border-radius:3px; font-size:10px; padding:0 4px; margin-left:4px; vertical-align:middle; }
+  #toggle-members { background:none; border:0; color:var(--muted); font-size:20px; cursor:pointer; padding:0 4px; }
+  #toggle-members.on { color:var(--text); }
+  #close-members { display:none; width:100%; background:var(--hover); color:var(--text); border:0; border-radius:4px; padding:8px; font:inherit; cursor:pointer; }
+  @media (max-width:900px) { #close-members { display:block; } }
+  body.no-members aside { display:none; }
+  @media (max-width:900px) { aside { position:fixed; right:0; top:0; bottom:0; z-index:5; box-shadow:-4px 0 12px rgba(0,0,0,.4); } body:not(.no-members) aside { padding-top:calc(8px + env(safe-area-inset-top)); } }
+  @media (max-width:640px) { body { flex-direction:column; } nav { width:100%; max-height:30vh; } aside { width:85vw; } }
 </style>
 </head>
 <body>
@@ -70,9 +91,11 @@
   <header>
     <div id="title">Choisis un salon</div>
     <form id="search" hidden><input type="search" placeholder="Rechercher dans le salon…" aria-label="Rechercher"></form>
+    <button id="toggle-members" title="Membres" aria-label="Afficher / masquer les membres">👥</button>
   </header>
   <div id="log"></div>
 </main>
+<aside aria-label="Membres"><button id="close-members">✕ Fermer</button><div id="members"></div></aside>
 <script src="/format.js"></script>
 <script>
 let current = null, oldest = null, searching = false;
@@ -119,7 +142,9 @@ function render(m) {
 // ---- Non-lus : compteur en direct + pastille pour ce qui est arrivé pendant l'absence
 let seen = {};
 try { seen = JSON.parse(localStorage.getItem('seen') || '{}'); } catch {}
-const counts = {}, titles = {}, lastIds = {};
+const counts = {}, titles = {}, lastIds = {}, guildOf = {};
+let currentGuild = null;
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 const newer = (a, b) => BigInt(a || 0) > BigInt(b || 0);
 
 function saveSeen() { try { localStorage.setItem('seen', JSON.stringify(seen)); } catch {} }
@@ -139,8 +164,9 @@ function markRead(id) {
   paint(id);
 }
 
-function navButton(id, label, cls, title, last) {
+function navButton(id, label, cls, title, last, guildId) {
   const b = document.createElement('button'); b.dataset.id = id; if (cls) b.className = cls;
+  guildOf[id] = guildId;
   const l = document.createElement('span'); l.className = 'label'; l.textContent = label;
   const badge = document.createElement('span'); badge.className = 'badge';
   b.append(l, badge);
@@ -163,12 +189,23 @@ async function buildNav() {
       const g = document.createElement('div'); g.className = 'guild'; g.textContent = guild; nav.append(g);
     }
     const base = `${c.guild} / #${c.name}`;
-    if (c.forum) {
-      const f = document.createElement('div'); f.className = 'forum'; f.textContent = '💬 ' + c.name; nav.append(f);
+    const icon = c.voice ? '🔊 ' : '# ';
+    if (c.forum || (c.voice && !c.readable)) {
+      const f = document.createElement('div'); f.className = 'forum'; f.textContent = (c.forum ? '💬 ' : icon) + c.name; nav.append(f);
     } else {
-      nav.append(navButton(c.id, '# ' + c.name, '', base, c.last));
+      nav.append(navButton(c.id, icon + c.name, '', `${c.guild} / ${icon}${c.name}`, c.last, c.guild_id));
     }
-    for (const t of c.threads) nav.append(navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last));
+    for (const u of c.connected) {
+      const row = document.createElement('div'); row.className = 'voice-user';
+      const img = document.createElement('img'); img.src = u.avatar; img.alt = '';
+      const name = document.createElement('span'); name.textContent = u.name;
+      const icons = document.createElement('span'); icons.className = 'icons';
+      if (u.stream) { const l = document.createElement('span'); l.className = 'live'; l.textContent = 'LIVE'; icons.append(l, ' '); }
+      icons.append((u.video ? '📷' : '') + (u.mute ? '🔇' : '') + (u.deaf ? '🎧✕' : ''));
+      icons.title = [u.stream && 'partage son écran', u.video && 'caméra', u.mute && 'micro coupé', u.deaf && 'son coupé'].filter(Boolean).join(', ');
+      row.append(img, name, icons); nav.append(row);
+    }
+    for (const t of c.threads) nav.append(navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last, c.guild_id));
     if (c.forum) {
       const more = document.createElement('button'); more.className = 'older';
       more.textContent = 'Anciens posts…';
@@ -176,7 +213,7 @@ async function buildNav() {
         more.textContent = 'Chargement…';
         const r = await fetch(`/api/channels/${c.id}/archived`);
         const list = r.ok ? await r.json() : [];
-        more.replaceWith(...list.map(t => navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last)));
+        more.replaceWith(...list.map(t => navButton(t.id, '↳ ' + t.name, 'thread', `${base} › ${t.name}`, t.last, c.guild_id)));
         list.forEach(t => paint(t.id));
       };
       nav.append(more);
@@ -184,13 +221,59 @@ async function buildNav() {
   }
   saveSeen();
   Object.keys(titles).forEach(paint);
+  if (!currentGuild) { currentGuild = Object.values(guildOf)[0] || null; loadMembers(); }
 }
+
+// ---- Membres du serveur affiché
+async function loadMembers() {
+  const gid = currentGuild, aside = document.getElementById('members');
+  if (!gid) return;
+  const res = await fetch(`/api/guilds/${gid}/members`);
+  if (!res.ok || gid !== currentGuild) return;
+  const STATUS = { online: 'En ligne', idle: 'Absent', dnd: 'Ne pas déranger', offline: 'Hors ligne' };
+  aside.innerHTML = '';
+  for (const g of await res.json()) {
+    const h = document.createElement('h3'); h.textContent = `${g.name} — ${g.count}`; aside.append(h);
+    for (const m of g.members) {
+      const row = document.createElement('div'); row.className = 'member' + (m.status === 'offline' ? ' offline' : '');
+      const pic = document.createElement('div'); pic.className = 'pic';
+      const img = document.createElement('img'); img.src = m.avatar; img.alt = '';
+      const dot = document.createElement('span'); dot.className = 'dot ' + m.status; dot.title = STATUS[m.status] || m.status;
+      pic.append(img, dot);
+      const info = document.createElement('div'); info.className = 'info';
+      const name = document.createElement('div'); name.textContent = m.name;
+      if (m.color) name.style.color = m.color;
+      if (m.bot) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'BOT'; name.append(t); }
+      info.append(name);
+      if (m.activity) { const a = document.createElement('div'); a.className = 'act'; a.textContent = m.activity; info.append(a); }
+      row.append(pic, info); aside.append(row);
+    }
+    if (g.count > g.members.length) {
+      const more = document.createElement('div'); more.className = 'act member'; more.textContent = `… et ${g.count - g.members.length} autres`;
+      aside.append(more);
+    }
+  }
+}
+const refreshMembers = debounce(loadMembers, 500);
+const refreshNav = debounce(buildNav, 500);
+
+const toggle = document.getElementById('toggle-members');
+function setMembersVisible(on) {
+  document.body.classList.toggle('no-members', !on); toggle.classList.toggle('on', on);
+  try { localStorage.setItem('members', on ? '1' : '0'); } catch {}
+}
+let membersPref = null;
+try { membersPref = localStorage.getItem('members'); } catch {}
+setMembersVisible(membersPref ? membersPref === '1' : innerWidth > 900); // fermé par défaut sur téléphone
+toggle.onclick = () => setMembersVisible(document.body.classList.contains('no-members'));
+document.getElementById('close-members').onclick = () => setMembersVisible(false);
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden && current) markRead(current); });
 
 async function load(id) {
   const name = titles[id] || '';
   current = id; oldest = null; searching = false; log.innerHTML = '';
+  if (guildOf[id] && guildOf[id] !== currentGuild) { currentGuild = guildOf[id]; loadMembers(); }
   document.getElementById('title').textContent = name;
   form.hidden = false; form.querySelector('input').value = '';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.id === id));
@@ -236,7 +319,8 @@ form.onsubmit = async e => {
   await buildNav();
   new EventSource('/api/stream').onmessage = e => {
     const m = JSON.parse(e.data);
-    if (m.type === 'channels') { buildNav(); return; }
+    if (m.type === 'channels') { refreshNav(); return; }
+    if (m.type === 'members') { if (m.guild === currentGuild) refreshMembers(); return; }
     if (m.type === 'new') {
       if (newer(m.id, lastIds[m.channel])) lastIds[m.channel] = m.id;
       if (m.channel === current && !document.hidden) markRead(m.channel);
