@@ -4,12 +4,14 @@ Bot Discord qui affiche les messages des salons dans une page web façon chat (h
 
 Fonctions : historique complet, messages en direct, réponses, réactions, messages modifiés / supprimés,
 recherche par mot ou auteur (sur les 2000 derniers messages du salon), fils et forums, mise en forme Discord
-(gras, liens, code, mentions, emojis…), compteur de non-lus, notifications sur le téléphone.
+(gras, liens, code, mentions, emojis…), compteur de non-lus, notifications sur le téléphone,
+membres du serveur avec leur statut et activité, salons vocaux avec les personnes connectées.
 
 ## 1. Créer le bot
 1. https://discord.com/developers/applications → *New Application* → onglet **Bot** → *Reset Token* (copie-le, garde-le secret).
    ⚠️ Ce n'est **pas** la « Public Key » de l'onglet General Information : celle-là ne sert pas ici.
-2. Même onglet : active **Message Content Intent**.
+2. Même onglet, section *Privileged Gateway Intents* : active **Presence Intent**, **Server Members Intent**
+   et **Message Content Intent** (statuts des membres, liste des membres, contenu des messages).
 3. Onglet **OAuth2 → URL Generator** : scope `bot`, permissions `View Channels` + `Read Message History`.
 4. Envoie l'URL générée à un admin du serveur pour qu'il invite le bot.
 
